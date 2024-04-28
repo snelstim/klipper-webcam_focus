@@ -26,7 +26,7 @@ You can see the plugin in action and performing calibration on my YouTube video:
 The module can be installed into a existing Klipper installation with an install script. 
 
     cd ~
-    git clone https://github.com/guru-florida/klipper-webcam_focus.git
+    git clone https://github.com/snelstim/klipper-webcam_focus.git
     cd klipper-webcam_focus
     ./install-webcam_focus.sh
 
