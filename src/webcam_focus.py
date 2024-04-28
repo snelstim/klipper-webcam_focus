@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+
+
 # Control focus on webcam using printer's XY coordinates,
 # and/or control other webcam settings using gcode macros.
 #
@@ -13,31 +16,33 @@ UPDATE_TIME  = 1.0
 
 def v4l2_query():
     try:
-	lines=subprocess.check_output(['v4l2-ctl','-kl']).split('\n')
-	controls = []
+        lines=subprocess.check_output(['v4l2-ctl','-kl']).split('\n')
+        controls = []
         valueof = lambda x: int(x) if x.isdigit() else x
-	for line in lines:
+        for line in lines:
             try:
-		left, right = line.split(':')
-		prop_name, prop_id, dtype = left.split()
-		properties = [p.split('=') for p in right.split()]
+                left, right = line.split(':')
+                prop_name, prop_id, dtype = left.split()
+                properties = [p.split('=') for p in right.split()]
                 props = {p[0]:valueof(p[1]) for p in properties}
-		obj = {
+                obj = {
 			'name': prop_name,
 			'id': prop_id,
 			'type': dtype
 		}
+                self.gcode.respond_raw('name')
                 obj.update(props)
-		controls.append(obj)
+                controls.append(obj)
             except:
                 pass
-	return controls
+            return controls
     except:
         return None
 
 
 def v4l2_query_single(prop_name):
     props = v4l2_query()
+
     if props is not None:
         for p in props:
             if p['name'] == prop_name:
@@ -72,8 +77,8 @@ class WebcamFocus:
         #self.printer.load_object(config, "display_status")
 
         self.video_dev = config.get('device', '/dev/video0')
-        self.min_focus = config.getint('min_focus', 0)
-        self.max_focus = config.getint('max_focus', 255)
+        self.min_focus = float(config.getint('min_focus', 0))
+        self.max_focus = float(config.getint('max_focus', 255))
 
         # read camera position from config and ensure it is 4 values (x,y,z)
         self.camera_position = ensure_xyz(config.getintlist('camera_position'))
@@ -125,17 +130,41 @@ class WebcamFocus:
         def _mapper(dist):
             prev = focals[0]
             for f in focals:
-                if dist < f[0]:
+                if float(dist) < f[0]:
                     t = f[0] - prev[0]
                     if t == 0:
                         return f[1]
                     else:
-                        r = (dist - prev[0]) / t
-                        fp = prev[1] + r * (f[1] - prev[1])
-                        return int(fp)
+                        r = (dist - prev[0]) // t
+                        fp = int(prev[1]) + r * (int(f[1]) - int(prev[1]))
+                        return fp
                 prev = f
-            #return int(prev) if prev else 80
+            return int(prev[0]) if prev else 80
         self.focus_mapper = _mapper
+
+##    def _updateFocus(self, eventtime):
+##       	if self.enable_focus_control is not None:
+##            dist = self.distance()
+##            focus = self.focus_mapper(dist)
+##            #focus = max(self.min_focus), min(self.max_focus), focus))
+##            focus = max(self.min_focus,self.max_focus)
+##            if float(self.focus) != float(focus):
+##                self.focus = float(focus)
+##                self.gcode.respond_raw('Focus {0} <= {1}'.format(focus, dist))
+##                self._focus(focus)
+##            return eventtime + UPDATE_TIME
+
+    def _updateFocus(self, eventtime):
+        if self.enable_focus_control and self.focus_mapper is not None:
+            dist = self.distance()
+            focus = self.focus_mapper(dist)
+            focus = max(self.min_focus, min(self.max_focus, focus))
+            if self.focus != focus:
+                self.focus = focus
+                #self.gcode.respond_raw('Focus {0} <= {1}'.format(focus, dist))
+                self._focus(focus)
+
+        return eventtime + UPDATE_TIME
 
 
     def _handle_ready(self):
@@ -218,17 +247,7 @@ class WebcamFocus:
         
         return eventtime + 0.5
 
-    def _updateFocus(self, eventtime):
-        if self.enable_focus_control and self.focus_mapper is not None:
-            dist = self.distance()
-            focus = self.focus_mapper(dist)
-            focus = max(self.min_focus, min(self.max_focus, focus))
-            if self.focus != focus:
-                self.focus = focus
-                #self.gcode.respond_raw('Focus {0} <= {1}'.format(focus, dist))
-                self._focus(focus)
 
-        return eventtime + UPDATE_TIME
 
     def distance(self, position = None):
         if position is None:
@@ -247,7 +266,7 @@ class WebcamFocus:
 
     def cmd_v4l2(self, gcmd):
         focus_abs=gcmd.get_float('FOCUS_ABSOLUTE', None)
-        focus_auto=gcmd.get_int('FOCUS_AUTO', None)
+        focus_auto=gcmd.get_int('FOCUS_AUTOMATIC_CONTINUOUS', None)
         if focus_auto is not None:
             self.gcode.respond_raw('enabling auto-focus' if focus_auto else 'disabling auto-focus')
             self._control('focus_auto', focus_auto)
@@ -263,7 +282,7 @@ class WebcamFocus:
         self.focus_mapper = None
 
     def cmd_save_point(self, gcmd):
-        focus_abs=gcmd.get_float('FOCUS_ABSOLUTE', self.last_manual_focus)
+        focus_abs=gcmd.get_float('FOCUS_ABSOLUTE', self.last_manual_focus())
         dist=gcmd.get_float('D', self.distance())
         if focus_abs is None:
             self.gcode.respond_raw('Missing FOCUS_ABSOLUTE parameter and no previous setting has been made')
@@ -321,11 +340,11 @@ class WebcamFocus:
     def cmd_focus_calibrate(self, gcmd):
         axes_max = self.kin.axes_max
         axes_min = self.kin.axes_min
-        ymin=gcmd.get_int('Y_MIN', axes_min[1])
-        ymax=gcmd.get_int('Y_MAX', axes_max[1])
-        ystep=gcmd.get_int('Y_STEP', (ymax - ymin) / 10)
+        xmin=gcmd.get_int('X_MIN', axes_min[0])
+        xmax=gcmd.get_int('X_MAX', axes_max[0])
+        xstep=gcmd.get_int('X_STEP', (xmax - xmin) // 10)
         move_speed=gcmd.get_int('MOVE_SPEED', 300)
-        logging.info('focus calibration: Y%d -> Y%d every %d   speed: %d' % (ymin, ymax, ystep, move_speed))
+        logging.info('focus calibration: X%d -> X%d every %d   speed: %d' % (xmin, xmax, xstep, move_speed))
 
         toolhead = self.printer.lookup_object('toolhead')
         if not toolhead:
@@ -346,37 +365,46 @@ class WebcamFocus:
         self.focus_mapper_coeffs = None
         self.focus_mapper = None
 
-        for p in range(ymin, ymax, ystep):
+        for p in range(xmin, xmax, xstep):
             # extent position should be far away from test position
-            extent_y = 100 if p > 250 else 450
+            extent_x = 100 if p > 180 else (xmax-5)
 
             # move to extent to wipe focus
-            point = [250, extent_y]
+            point = [extent_x, 110]
             toolhead.manual_move(point, move_speed)
             toolhead.wait_moves()
             toolhead.dwell(1.0)
 
             # move to new test position
-            point = [250, p]
+            point = [p, 110]
             toolhead.manual_move(point, move_speed)
             toolhead.wait_moves()
             toolhead.dwell(8.0)
 
             # record focus
             focus = v4l2_query_single('focus_absolute')
+            d = self.distance(point)
+            self.gcode.respond_raw('  focus {}:{}'.format(d, focus))
+            self.distances.append(d)
+            self.focals.append(focus)
             if focus is not None:
                 d = self.distance(point)
                 self.gcode.respond_raw('  focus {}:{}'.format(d, focus))
                 self.distances.append(d)
                 self.focals.append(focus)
 
-
+        
         if len(self.distances) > 1:
             self.build_focus_mapper()
             self.try_enable_focus_control()
             self.print_points()
 
         self.gcode.respond_raw('finished auto-focus calibration')
+        # set camera auto contrast - exposure
+##        self.gcode.respond_raw('enabling auto-focus')
+##        self._control('contrast', auto)
+        self._control('auto_exposure', 1)
+##        self._focus_auto(True)
 
 
 
@@ -389,7 +417,7 @@ class WebcamFocus:
     def _focus_auto(self, enable):
         if enable and self.enable_focus_control:
             self.disable_focus_control()
-        self._control('focus_auto', 1 if enable else 0)
+        self._control('focus_automatic_continuous', 1 if enable else 0)
 
 
 
