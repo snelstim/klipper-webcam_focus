@@ -26,9 +26,9 @@ def v4l2_query():
                 properties = [p.split('=') for p in right.split()]
                 props = {p[0]:valueof(p[1]) for p in properties}
                 obj = {
-			'name': prop_name,
-			'id': prop_id,
-			'type': dtype
+            'name': prop_name,
+            'id': prop_id,
+            'type': dtype
 		}
                 self.gcode.respond_raw('name')
                 obj.update(props)
